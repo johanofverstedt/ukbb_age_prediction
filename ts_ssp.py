@@ -56,14 +56,20 @@ def abs_pearson_score(X, y):
         return result / y.shape[1]   
 
 def ranked_filtering(xs, y, n):
-    if n >= xs.shape[0]:
+    if n is None or n >= xs.shape[0]:
         n = 'all'
     feat_sel = sklearn.feature_selection.SelectKBest(score_func = abs_pearson_score, k = n)
     feat_sel.fit(xs, y)
     return feat_sel.get_support()
 
-class TS_SSP_Filtered:
-    def __init__(self, n_comp, n_comp2, reg, c, nan_threshold=0.1, model_name='unnamed_model'):
+class TS_SSP:
+    def __init__(self, n_comp, n_comp2, reg, c = 3.0, nan_threshold=0.1, model_name='unnamed_model'):
+        # n_comp is the number of PCA components used in the PCA.
+        # n_comp2 is the number of PCA components selected out of the n_comp PCA compoments.
+        # c is the clipping threshold at which the features are truncated (in standard deviations), default: 3.0.
+        # nan_threshold controls how many subjects in the training set is allowed to be missing a feature
+        #   until it is removed entirely.
+        # model_name is a string that can be used to identify the model context later, and is saved along with the model.
         self.n_comp = n_comp
         self.n_comp2 = n_comp2
         self.reg = reg
@@ -207,7 +213,6 @@ class TS_SSP_Filtered:
 
         # Undo the z-score normalization to map 
         if not zscores:
-            #print(self.mask.shape, self.x_std.shape)
             x_std_unmasked = np.ones(feat_num)# self.x_std[self.mask]
             x_std_unmasked[self.mask] = np.squeeze(self.x_std)
             sal = sal * (np.squeeze(self.y_std) / np.squeeze(x_std_unmasked))
