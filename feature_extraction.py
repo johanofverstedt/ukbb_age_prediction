@@ -230,7 +230,24 @@ def test_feature_extraction(seed=1000):
     supervoxel_image[2:4, 0:2, 2:4] = 6
     supervoxel_image[0:2, 2:4, 2:4] = 7
     supervoxel_image[2:4, 2:4, 2:4] = 8
-        
+
+    # test the bounding box function
+    bb_mn, bb_mx = get_bbox_3d(supervoxel_image==4)
+    assert(bb_mn[0] == 2)
+    assert(bb_mn[1] == 2)
+    assert(bb_mn[2] == 0)
+    assert(bb_mx[0] == 4)
+    assert(bb_mx[1] == 4)
+    assert(bb_mx[2] == 2)
+
+    bb_mn, bb_mx = get_bbox_3d(supervoxel_image==7)
+    assert(bb_mn[0] == 0)
+    assert(bb_mn[1] == 2)
+    assert(bb_mn[2] == 2)
+    assert(bb_mx[0] == 2)
+    assert(bb_mx[1] == 4)
+    assert(bb_mx[2] == 4)
+            
     deformed_ff_image = np.random.rand(4, 4, 4)
     jacdet_image = np.power(2, 2*np.random.rand(4, 4, 4)-1)
     
