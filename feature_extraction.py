@@ -1,0 +1,348 @@
+
+#
+# Implementation of feature extraction for Tissue-specific Standardized Supervoxel Prediction (TS-SSP)
+#
+# Author: Johan Ofverstedt
+#
+
+import numpy as np
+import SimpleITK as sitk
+
+#
+# To use this code, load the images (supervoxel/SLIC image, the deformed fat fraction image, jacobian determinant image)
+# read the voxel size/volume, and convert the images into numpy arrays and call the functions in this module.
+# This code assumes that all the images are the same array size as the supervoxel image, which
+# it should be if the images are registered to a template image.
+#
+# Both a 3-tissue group configuration or the 1-tissue group configuration is provided in this module.
+# Since all tissue group assignments are binary, here we do not use the weighted mean/sd computations
+# from the paper for now.
+#
+# Fat fractions are assumed to be in the range [0, 1]. If values are in a different range, renormalize
+# the images into this range before calling the functions in this module.
+#
+# Merge the resulting feature arrays into a single feature array for the whole dataset
+# for further processing with the ts_ssp module.
+#
+
+# helper function to obtain a bounding box for a given mask
+def get_bbox_3d(mask):
+    mask_0 = np.any(mask, axis=(1, 2))
+    if np.any(mask_0) == False:
+        # the mask is empty
+        return (None, None)
+
+    mask_1 = np.any(mask, axis=(0, 2))
+    mask_2 = np.any(mask, axis=(0, 1))
+        
+    min_0, max_0 = np.where(mask_0)[0][[0, -1]]
+    min_1, max_1 = np.where(mask_1)[0][[0, -1]]
+    min_2, max_2 = np.where(mask_2)[0][[0, -1]]
+    
+    return (min_0, min_1, min_2), (max_0+1, max_1+1, max_2+1)
+
+def weighted_mean_and_sd(wmask, value, return_total_weight=False):
+    # This function computes the weighted mean and (unbiased) standard deviation
+    # given an array of weights (wmask) and an array of values.
+    # Optional: return the total weight computed in the function as a third output
+    
+    wmask = wmask.astype(np.float32)
+    val_sum = np.sum(wmask * value)
+    weight_sum = np.sum(wmask)
+    if weight_sum < 1e-15:
+        if return_total_weight:
+            return np.nan, np.nan, weight_sum
+        else:
+            return np.nan, np.nan
+    wmean = val_sum / weight_sum
+    
+    weight_2_sum = np.sum(wmask**2)
+
+    sd_denom = 1.0 / (weight_sum - weight_2_sum/weight_sum)
+    wsd = np.sqrt(sd_denom * np.sum(wmask*((value-wmean)**2)))
+    if return_total_weight:
+        return wmean, wsd, weight_sum
+    else:
+        return wmean, wsd
+    
+
+def extract_tissue_specific_features_from_numpy_arrays(supervoxel_image, supervoxel_indices, deformed_ff_image, jacdet_image, single_voxel_volume=1.0, bbox_cache=None, return_bbox_cache=True):
+    # compute whole image tissue group masks
+    # tissue-group filters (lean: 0 < ff <= 0.2, medium ff: 0.2 < ff <= 0.8, adipose: 0.8 < ff)
+    tissue_mask_lean = np.logical_and(deformed_ff_image > 0, deformed_ff_image <= 0.2)
+    tissue_mask_medium_ff = np.logical_and(deformed_ff_image > 0.2, deformed_ff_image <= 0.8)
+    tissue_mask_adipose = deformed_ff_image > 0.8
+    
+    if bbox_cache is None:
+        bbox_cache_output = []
+    else:
+        bbox_cache_output = bbox_cache
+        
+    lean_features = []
+    medium_ff_features = []
+    adipose_features = []
+    for i, ind in enumerate(supervoxel_indices):              
+        if bbox_cache is None:
+            supervoxel_mask_i = supervoxel_image==ind
+        
+            bb_mn, bb_mx = get_bbox_3d(supervoxel_mask_i)
+            bbox_cache_output.append((bb_mn, bb_mx))
+
+            if bb_mn is not None:
+                supervoxel_mask_i = supervoxel_mask_i[bb_mn[0]:bb_mx[0], bb_mn[1]:bb_mx[1], bb_mn[2]:bb_mx[2]]
+        else:
+            bb_mn, bb_mx = bbox_cache[i]
+    
+            # extract the supervoxel mask within the bounding box only
+            if bb_mn is not None:
+                supervoxel_mask_i = supervoxel_image[bb_mn[0]:bb_mx[0], bb_mn[1]:bb_mx[1], bb_mn[2]:bb_mx[2]]==ind
+        
+        if bb_mn is None:
+            lean_features.append([[np.nan, 0.0, np.nan, 0.0, np.nan, np.nan]])
+            medium_ff_features.append([[np.nan, 0.0, np.nan, 0.0, np.nan, np.nan]])
+            adipose_features.append([[np.nan, 0.0, np.nan, 0.0, np.nan, np.nan]])
+            continue
+                          
+        # get all subimages (ff, jacdet and tissue masks) within the supervoxel bounding box
+               
+        deformed_ff_image_i = deformed_ff_image[bb_mn[0]:bb_mx[0], bb_mn[1]:bb_mx[1], bb_mn[2]:bb_mx[2]]
+        jacdet_image_i      = jacdet_image[bb_mn[0]:bb_mx[0], bb_mn[1]:bb_mx[1], bb_mn[2]:bb_mx[2]]
+
+        tissue_mask_lean_i      = tissue_mask_lean[bb_mn[0]:bb_mx[0], bb_mn[1]:bb_mx[1], bb_mn[2]:bb_mx[2]]
+        tissue_mask_medium_ff_i = tissue_mask_medium_ff[bb_mn[0]:bb_mx[0], bb_mn[1]:bb_mx[1], bb_mn[2]:bb_mx[2]]
+        tissue_mask_adipose_i   = tissue_mask_adipose[bb_mn[0]:bb_mx[0], bb_mn[1]:bb_mx[1], bb_mn[2]:bb_mx[2]]
+       
+        # get the tissue masks within the current supervoxel
+        
+        lean_mask_i = np.logical_and(supervoxel_mask_i, tissue_mask_lean_i).astype(np.float32)
+        medium_ff_mask_i = np.logical_and(supervoxel_mask_i, tissue_mask_medium_ff_i).astype(np.float32)
+        adipose_mask_i = np.logical_and(supervoxel_mask_i, tissue_mask_adipose_i).astype(np.float32)
+       
+        # Compute FF features and voxel count
+        feature_mean_ff_lean, feature_sd_ff_lean, feature_count_lean = weighted_mean_and_sd(lean_mask_i, deformed_ff_image_i, True)
+        feature_mean_ff_medium_ff, feature_sd_ff_medium_ff, feature_count_medium_ff = weighted_mean_and_sd(medium_ff_mask_i, deformed_ff_image_i, True)
+        feature_mean_ff_adipose, feature_sd_ff_adipose, feature_count_adipose = weighted_mean_and_sd(adipose_mask_i, deformed_ff_image_i, True)
+        
+        # Compute JacDet features
+        feature_mean_jacdet_lean, feature_sd_jacdet_lean = weighted_mean_and_sd(lean_mask_i, jacdet_image_i, False)        
+        feature_mean_jacdet_medium_ff, feature_sd_jacdet_medium_ff = weighted_mean_and_sd(medium_ff_mask_i, jacdet_image_i, False)        
+        feature_mean_jacdet_adipose, feature_sd_jacdet_adipose = weighted_mean_and_sd(adipose_mask_i, jacdet_image_i, False)        
+
+        # Compute Total Volume features
+        if feature_count_lean < 1e-7:
+            feature_totalvolume_lean = 0.0
+        else:        
+            feature_totalvolume_lean = feature_mean_jacdet_lean * feature_count_lean * single_voxel_volume
+        if feature_count_medium_ff < 1e-7:
+            feature_totalvolume_medium_ff = 0.0
+        else:        
+            feature_totalvolume_medium_ff = feature_mean_jacdet_medium_ff * feature_count_medium_ff * single_voxel_volume
+        if feature_count_adipose < 1e-7:
+            feature_totalvolume_adipose = 0.0
+        else:        
+            feature_totalvolume_adipose = feature_mean_jacdet_adipose * feature_count_adipose * single_voxel_volume
+       
+        lean_features.append([[feature_mean_ff_lean, feature_totalvolume_lean, feature_mean_jacdet_lean, feature_count_lean, feature_sd_ff_lean, feature_sd_jacdet_lean]])
+        
+        medium_ff_features.append([[feature_mean_ff_medium_ff, feature_totalvolume_medium_ff, feature_mean_jacdet_medium_ff, feature_count_medium_ff, feature_sd_ff_medium_ff, feature_sd_jacdet_medium_ff]])
+
+        adipose_features.append([[feature_mean_ff_adipose, feature_totalvolume_adipose, feature_mean_jacdet_adipose, feature_count_adipose, feature_sd_ff_adipose, feature_sd_jacdet_adipose]])
+        
+    lean_features = np.array(lean_features)
+    medium_ff_features = np.array(medium_ff_features)
+    adipose_features = np.array(adipose_features)
+     
+    # Concatenate the features along the tissue group axis
+    features = np.concatenate([lean_features, medium_ff_features, adipose_features], axis=1)
+    features = np.expand_dims(features, 0)
+     
+    # features is now an array with the dimensions: (subject, supervoxel, tissue group, feature)
+    # features from different subjects may now be concatenated along axis 0 to form a cohort feature-array
+    
+    if return_bbox_cache:
+        return features, bbox_cache_output
+    else:
+        return features
+        
+def extract_single_tissue_features_from_numpy_arrays(supervoxel_image, supervoxel_indices, deformed_ff_image, jacdet_image, single_voxel_volume=1.0, bbox_cache=None, return_bbox_cache=True):
+
+    if bbox_cache is None:
+        bbox_cache_output = []
+    else:
+        bbox_cache_output = bbox_cache
+
+    features = []
+        
+    for i, ind in enumerate(supervoxel_indices):
+        if bbox_cache is None:
+            supervoxel_mask_i = supervoxel_image==ind
+        
+            bb_mn, bb_mx = get_bbox_3d(supervoxel_mask_i)
+            bbox_cache_output.append((bb_mn, bb_mx))
+
+            if bb_mn is not None:
+                supervoxel_mask_i = supervoxel_mask_i[bb_mn[0]:bb_mx[0], bb_mn[1]:bb_mx[1], bb_mn[2]:bb_mx[2]]
+        else:
+            bb_mn, bb_mx = bbox_cache[i]
+    
+            # extract the supervoxel mask within the bounding box only
+            if bb_mn is not None:
+                supervoxel_mask_i = supervoxel_image[bb_mn[0]:bb_mx[0], bb_mn[1]:bb_mx[1], bb_mn[2]:bb_mx[2]]==ind
+        
+        deformed_ff_image_i = deformed_ff_image[bb_mn[0]:bb_mx[0], bb_mn[1]:bb_mx[1], bb_mn[2]:bb_mx[2]]
+        jacdet_image_i      = jacdet_image[bb_mn[0]:bb_mx[0], bb_mn[1]:bb_mx[1], bb_mn[2]:bb_mx[2]]
+       
+        masked_ff_image = deformed_ff_image_i[supervoxel_mask_i]
+        masked_jacdet_image = jacdet_image_i[supervoxel_mask_i]
+        
+        feature_mean_ff = np.mean(masked_ff_image)
+        feature_sd_ff = np.std(masked_ff_image, ddof=1)
+               
+        feature_mean_jacdet = np.mean(masked_jacdet_image)
+        feature_sd_jacdet = np.std(masked_jacdet_image, ddof=1)
+
+        features.append([[feature_mean_ff, feature_mean_jacdet, feature_sd_ff, feature_sd_jacdet]])
+        
+    features = np.array(features)
+     
+    # Introduce a new subject dimension
+    features = np.expand_dims(features, 0)
+     
+    # features is now an array with the dimensions: (subject, supervoxel, tissue group which is a singleton dimension, feature)
+    # features from different subjects may now be concatenated along axis 0 to form a cohort feature-array
+    
+    if return_bbox_cache:
+        return features, bbox_cache_output
+    else:
+        return features
+        
+def test_feature_extraction(seed=1000):
+    # test the feature extraction code with randomly generated images
+    
+    np.random.seed(seed)
+    
+    supervoxel_image = np.zeros((4, 4, 4), dtype=np.int32)
+    supervoxel_image[0:2, 0:2, 0:2] = 1
+    supervoxel_image[2:4, 0:2, 0:2] = 2
+    supervoxel_image[0:2, 2:4, 0:2] = 3
+    supervoxel_image[2:4, 2:4, 0:2] = 4
+    supervoxel_image[0:2, 0:2, 2:4] = 5
+    supervoxel_image[2:4, 0:2, 2:4] = 6
+    supervoxel_image[0:2, 2:4, 2:4] = 7
+    supervoxel_image[2:4, 2:4, 2:4] = 8
+        
+    deformed_ff_image = np.random.rand(4, 4, 4)
+    jacdet_image = np.power(2, 2*np.random.rand(4, 4, 4)-1)
+    
+    supervoxel_indices = np.unique(supervoxel_image)
+    print('Supervoxel_indices: ', supervoxel_indices)
+
+    features, bbox_cache = extract_tissue_specific_features_from_numpy_arrays(supervoxel_image, supervoxel_indices, deformed_ff_image, jacdet_image, single_voxel_volume=2.0)
+    features1b, _ = extract_tissue_specific_features_from_numpy_arrays(supervoxel_image, supervoxel_indices, deformed_ff_image, jacdet_image, single_voxel_volume=2.0, bbox_cache=bbox_cache)
+    features2, bbox_cache2 = extract_single_tissue_features_from_numpy_arrays(supervoxel_image, supervoxel_indices, deformed_ff_image, jacdet_image, single_voxel_volume=2.0)
+    features2b, _ = extract_single_tissue_features_from_numpy_arrays(supervoxel_image, supervoxel_indices, deformed_ff_image, jacdet_image, single_voxel_volume=2.0, bbox_cache=bbox_cache2)
+    
+    # check that we get the same feature values back if we use cached bounding boxes or not
+    assert(np.abs(features[np.invert(np.isnan(features))]-features1b[np.invert(np.isnan(features1b))]).sum() < 1e-15)
+    assert(np.abs(features2[np.invert(np.isnan(features2))]-features2b[np.invert(np.isnan(features2b))]).sum() < 1e-15)
+    
+    print('--- SUPERVOXELS ---')
+    print(supervoxel_image)
+    print('--- FF ---')
+    print(deformed_ff_image)
+    print('--- JacDet ---')
+    print(jacdet_image)
+    print('--- FEATURES ---')
+    print('Features shape (correct result (1, 8, 3, 6)): ', features.shape)
+    print(features)       
+    
+    # test tissue-specific feature extraction
+    assert(features.shape[0] == 1) # 1 subjects
+    assert(features.shape[1] == 8) # 8 supervoxels
+    assert(features.shape[2] == 3) # 3 tissue groups per supervoxel
+    assert(features.shape[3] == 6) # 6 features per supervoxel
+    for i in range(features.shape[1]):
+        for j in range(features.shape[2]):
+            cnt = features[0, i, j, 3]
+            assert(not np.isnan(features[0, i, j, 3]))
+            assert(cnt >= 0)
+            assert(cnt <= 8)
+            
+            mean_ff = features[0, i, j, 0]
+            totalvolume = features[0, i, j, 1]
+            mean_jacdet = features[0, i, j, 2]
+
+            if cnt == 0:
+                assert(np.isnan(features[0, i, j, 0]))
+                assert(not np.isnan(features[0, i, j, 1]))
+                assert(np.isnan(features[0, i, j, 2]))
+                assert(not np.isnan(features[0, i, j, 3]))
+                assert(np.isnan(features[0, i, j, 4]))
+                assert(np.isnan(features[0, i, j, 5]))
+                
+                assert(totalvolume < 1e-15)
+            elif cnt == 1:
+                assert(not np.isnan(features[0, i, j, 0]))
+                assert(not np.isnan(features[0, i, j, 1]))
+                assert(not np.isnan(features[0, i, j, 2]))
+                assert(np.isnan(features[0, i, j, 4]))
+                assert(np.isnan(features[0, i, j, 5]))
+                
+                assert(mean_ff >= 0.0)
+                assert(mean_ff <= 1.0)
+                assert(mean_jacdet >= 0.5)
+                assert(mean_jacdet <= 2.0)
+            else:
+                assert(not np.isnan(features[0, i, j, 0]))
+                assert(not np.isnan(features[0, i, j, 1]))
+                assert(not np.isnan(features[0, i, j, 2]))
+                assert(not np.isnan(features[0, i, j, 4]))
+                assert(not np.isnan(features[0, i, j, 5]))
+
+                assert(mean_ff >= 0.0)
+                assert(mean_ff <= 1.0)
+                assert(mean_jacdet >= 0.5)
+                assert(mean_jacdet <= 2.0)
+
+            # minimum possible volume is 0 and maximum volume possible is 8*2*2=32
+            print(totalvolume, mean_jacdet, cnt)
+            assert(totalvolume >= 0.0)
+            assert(totalvolume - 1e-15 <= 32)
+
+    # single tissue tests
+    assert(features2.shape[0] == 1) # 1 subjects
+    assert(features2.shape[1] == 8) # 8 supervoxels
+    assert(features2.shape[2] == 1) # 1 tissue group per supervoxel
+    assert(features2.shape[3] == 4) # 4 features per supervoxel
+    for i in range(features2.shape[1]):
+        for j in range(features2.shape[2]):
+            mean_ff = features2[0, i, j, 0]
+            mean_jacdet = features2[0, i, j, 1]
+            sd_ff = features2[0, i, j, 2]
+            sd_jacdet = features2[0, i, j, 3]
+            
+            assert(not np.isnan(mean_ff))
+            assert(not np.isnan(mean_jacdet))
+            assert(not np.isnan(sd_ff))
+            assert(not np.isnan(sd_jacdet))
+            
+            assert(mean_jacdet >= 0.5)
+            assert(mean_jacdet <= 2.0)
+            assert(mean_ff >= 0.0)
+            assert(mean_ff <= 1.0)
+            
+            assert(sd_ff >= 0.0)
+            assert(sd_jacdet >= 0.0)
+
+    print('All tests passed!')
+        
+if __name__ == '__main__':
+    for s in range(1000):
+        test_feature_extraction(s)
+   
+        
+    
+            
+        
+    
+    
