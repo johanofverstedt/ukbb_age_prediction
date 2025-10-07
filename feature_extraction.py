@@ -6,7 +6,6 @@
 #
 
 import numpy as np
-import SimpleITK as sitk
 
 #
 # To use this code, load the images (supervoxel/SLIC image, the deformed fat fraction image, jacobian determinant image)
