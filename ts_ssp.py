@@ -66,6 +66,7 @@ class TS_SSP:
     def __init__(self, n_comp, n_comp2, reg, c = 3.0, nan_threshold=0.1, model_name='unnamed_model'):
         # n_comp is the number of PCA components used in the PCA.
         # n_comp2 is the number of PCA components selected out of the n_comp PCA compoments.
+        # reg is the L2 regularization parameter. If set to None or 0, no regularization is used.
         # c is the clipping threshold at which the features are truncated (in standard deviations), default: 3.0.
         # nan_threshold controls how many subjects in the training set is allowed to be missing a feature
         #   until it is removed entirely.
@@ -143,7 +144,7 @@ class TS_SSP:
             self.pca = None
             self.pca_filt = None
             
-        if self.reg is None:
+        if self.reg is None or self.reg <= 0.0:
             print(f'--- Fitting REGRESSION ---')
             self.model = sklearn.linear_model.LinearRegression()
         else:
