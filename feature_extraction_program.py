@@ -16,7 +16,7 @@ import os
 import time
 import argparse
 
-import feature_extraction as fe
+import generic_feature_extraction as fe
 
 def load_supervoxel_file(path):
     supervoxel_image = sitk.ReadImage(path, sitk.sitkInt32)
@@ -27,7 +27,11 @@ def load_supervoxel_file(path):
     
 def supervoxel_feature_extraction_from_files(supervoxel_path, ff_folder, jacdet_folder, subject_ids, out_folder, feature_set_name, single_tissue = False, ext = '.nii.gz', save_period=100):
     # load the supervoxels once and for all
+    print(f'Loading the supervoxel image')
+    t1 = time.time()
     supervoxel_image, supervoxel_array, supervoxel_indices = load_supervoxel_file(supervoxel_path)
+    t2 = time.time()
+    print(f'Time elapsed: {t2-t1}s.')
     
     all_features = []
     bbox_cache = None
@@ -38,6 +42,7 @@ def supervoxel_feature_extraction_from_files(supervoxel_path, ff_folder, jacdet_
     
     if os.path.exists(output_path):
         in_features = np.load(output_path, allow_pickle=True)['arr_0']
+        print(f'Loaded features array with shape: {in_features.shape} and dtype: {in_features.dtype}')
         start_index = in_features.shape[0] # skip the first subjects we have already processed
         all_features.append(in_features)
         
@@ -56,7 +61,7 @@ def supervoxel_feature_extraction_from_files(supervoxel_path, ff_folder, jacdet_
         
         ff_array = sitk.GetArrayFromImage(ff_image)
         jacdet_array = sitk.GetArrayFromImage(jacdet_image)
-        
+               
         # compute the voxel size in mL
         sp = np.array(ff_image.GetSpacing())
         voxel_size = np.prod(sp) / 1000.0
@@ -67,8 +72,14 @@ def supervoxel_feature_extraction_from_files(supervoxel_path, ff_folder, jacdet_
             print('Extracting single tissue features')
             features_i, bbox_cache = fe.extract_single_tissue_features_from_numpy_arrays(supervoxel_array, supervoxel_indices, ff_array, jacdet_array, single_voxel_volume=voxel_size, bbox_cache=bbox_cache, return_bbox_cache=True)
         else:
-            print('Extracting tissue-specific features')
-            features_i, bbox_cache = fe.extract_tissue_specific_features_from_numpy_arrays(supervoxel_array, supervoxel_indices, ff_array, jacdet_array, single_voxel_volume=voxel_size, bbox_cache=bbox_cache, return_bbox_cache=True)
+            print('Making the tissue group images')
+            tissue_mask_lean = np.logical_and(ff_array > 0, ff_array <= 0.2).astype(np.float32)
+            tissue_mask_medium_ff = np.logical_and(ff_array > 0.2, ff_array <= 0.8).astype(np.float32)
+            tissue_mask_adipose = (ff_array > 0.8).astype(np.float32)
+            print('Extracting tissue-specific features with 3 groups')
+            tissue_masks = [tissue_mask_lean, tissue_mask_medium_ff, tissue_mask_adipose]
+            
+            features_i, bbox_cache = fe.extract_tissue_specific_features_from_numpy_arrays(supervoxel_array, supervoxel_indices, ff_array, jacdet_array, tissue_masks, single_voxel_volume=voxel_size, bbox_cache=bbox_cache, return_bbox_cache=True)
         
         all_features.append(features_i)
 
@@ -79,9 +90,12 @@ def supervoxel_feature_extraction_from_files(supervoxel_path, ff_folder, jacdet_
             cat_features = np.concatenate(all_features, axis=0)
             np.savez_compressed(output_path, cat_features, allow_pickle=True)
             
-    cat_features = np.concatenate(all_features, axis=0)   
-    print(f'--- DONE --- Saving features ({cat_features.shape[0]} processed). Shape of feature array: {cat_features.shape}')
-    np.savez_compressed(output_path, cat_features, allow_pickle=True)
+    if start_index < len(subject_ids):
+        cat_features = np.concatenate(all_features, axis=0, dtype=np.float32)   
+        print(f'--- DONE --- Saving features ({cat_features.shape[0]} processed). Shape of feature array: {cat_features.shape}, dtype: {cat_features.dtype}')
+        np.savez_compressed(output_path, cat_features, allow_pickle=True)
+    else:
+        print(f'--- Nothing to do. Everything already processed. ---')
     
 def main():
     parser = argparse.ArgumentParser()
