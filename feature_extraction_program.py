@@ -100,4 +100,5 @@ def main():
     
     supervoxel_feature_extraction_from_files(args.supervoxel_path, args.ff_folder, args.jacdet_folder, subject_ids, single_tissue = args.single_tissue, ext=args.ext)
    
-
+if __name__ == '__main__':
+    main()
