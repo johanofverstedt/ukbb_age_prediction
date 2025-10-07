@@ -228,9 +228,14 @@ def test_feature_extraction(seed=1000):
     
     supervoxel_indices = np.unique(supervoxel_image)
     print('Supervoxel_indices: ', supervoxel_indices)
-
-    features, bbox_cache = extract_tissue_specific_features_from_numpy_arrays(supervoxel_image, supervoxel_indices, deformed_ff_image, jacdet_image, single_voxel_volume=2.0)
-    features1b, _ = extract_tissue_specific_features_from_numpy_arrays(supervoxel_image, supervoxel_indices, deformed_ff_image, jacdet_image, single_voxel_volume=2.0, bbox_cache=bbox_cache)
+    
+    tissue_mask_lean = np.logical_and(deformed_ff_image > 0, deformed_ff_image <= 0.2).astype(np.float32)
+    tissue_mask_medium_ff = np.logical_and(deformed_ff_image > 0.2, deformed_ff_image <= 0.8).astype(np.float32)
+    tissue_mask_adipose = (deformed_ff_image > 0.8).astype(np.float32)
+    tissue_masks = [tissue_mask_lean, tissue_mask_medium_ff, tissue_mask_adipose]
+            
+    features, bbox_cache = extract_tissue_specific_features_from_numpy_arrays(supervoxel_image, supervoxel_indices, deformed_ff_image, jacdet_image, tissue_masks, single_voxel_volume=2.0)
+    features1b, _ = extract_tissue_specific_features_from_numpy_arrays(supervoxel_image, supervoxel_indices, deformed_ff_image, jacdet_image, tissue_masks, single_voxel_volume=2.0, bbox_cache=bbox_cache)
     features2, bbox_cache2 = extract_single_tissue_features_from_numpy_arrays(supervoxel_image, supervoxel_indices, deformed_ff_image, jacdet_image, single_voxel_volume=2.0)
     features2b, _ = extract_single_tissue_features_from_numpy_arrays(supervoxel_image, supervoxel_indices, deformed_ff_image, jacdet_image, single_voxel_volume=2.0, bbox_cache=bbox_cache2)
     
