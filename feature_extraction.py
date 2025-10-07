@@ -57,9 +57,12 @@ def weighted_mean_and_sd(wmask, value, return_total_weight=False):
     wmean = val_sum / weight_sum
     
     weight_2_sum = np.sum(wmask**2)
-
-    sd_denom = 1.0 / (weight_sum - weight_2_sum/weight_sum)
-    wsd = np.sqrt(sd_denom * np.sum(wmask*((value-wmean)**2)))
+    if np.abs(weight_sum - 1.0) < 1e-7 and np.abs(weight_2_sum - 1.0) < 1e-7:
+        # if both the weight sum and squared weight sum is close to 1, the result is nan
+        wsd = np.nan
+    else:
+        sd_denom = 1.0 / (weight_sum - weight_2_sum/weight_sum)
+        wsd = np.sqrt(sd_denom * np.sum(wmask*((value-wmean)**2)))
     if return_total_weight:
         return wmean, wsd, weight_sum
     else:
